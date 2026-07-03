@@ -162,6 +162,40 @@ async function handleChat(request, env, ctx, slots, token) {
     const idx = (start + step) % n;
     const s = slots[idx];
     const reqBody = { ...body, model: s.model };
+
+    // Специальный upstream: Cloudflare Workers AI через AI binding
+    // (не HTTP, а прямой env.AI.run) — 10K Neurons/день бесплатно, без токена.
+    // Провайдер помечается name="cloudflare-ai" в LLM_PROVIDERS, keys=["binding"].
+    if (s.provider === "cloudflare-ai" && env.AI) {
+      try {
+        const aiResp = await env.AI.run(s.model, {
+          messages: reqBody.messages,
+          temperature: reqBody.temperature ?? 0,
+          max_tokens: reqBody.max_tokens ?? 512,
+          response_format: reqBody.response_format,
+        });
+        // aiResp: { response: "text" } или совместимый OpenAI формат
+        const content = aiResp.response ?? aiResp.choices?.[0]?.message?.content ?? "";
+        await bumpStats(env, ctx, token);
+        return json(200, {
+          id: `cfai-${Date.now()}`,
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: s.model,
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content },
+            finish_reason: "stop",
+          }],
+          usage: aiResp.usage ?? {},
+        });
+      } catch (e) {
+        lastErr = `cloudflare-ai ${s.model}: ${e.message || e}`;
+        lastStatus = 503;
+        continue;
+      }
+    }
+
     const headers = {
       "authorization": `Bearer ${s.key}`,
       "content-type": "application/json",
