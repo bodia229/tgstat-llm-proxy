@@ -37,6 +37,12 @@ def _load_providers():
     raw = (os.environ.get("LLM_PROVIDERS") or "").strip()
     if not raw:
         return []
+    # Render UI при вставке длинного JSON может добавить переносы строк
+    # (\n, \r) между значениями. JSON.loads строгий — control chars вне
+    # строковых литералов ломают parse. Убираем все C0 control chars,
+    # кроме таба (он в наших JSON'ах не встречается внутри строк).
+    import re
+    raw = re.sub(r"[\x00-\x08\x0a-\x1f]+", " ", raw)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
