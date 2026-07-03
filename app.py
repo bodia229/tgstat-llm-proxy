@@ -38,11 +38,13 @@ def _load_providers():
     if not raw:
         return []
     # Render UI при вставке длинного JSON может добавить переносы строк
-    # (\n, \r) между значениями. JSON.loads строгий — control chars вне
-    # строковых литералов ломают parse. Убираем все C0 control chars,
-    # кроме таба (он в наших JSON'ах не встречается внутри строк).
+    # (\n, \r) прямо внутрь ключа (визуально ключ разбивается на строки).
+    # JSON.loads строгий и падает; при этом заменять на пробел нельзя —
+    # это сломает ключ ('csk-abc def' → 401 auth). Полностью удаляем C0
+    # control chars: \n между JSON-элементами исчезнет без последствий,
+    # \n внутри разорванной строки восстановит её.
     import re
-    raw = re.sub(r"[\x00-\x08\x0a-\x1f]+", " ", raw)
+    raw = re.sub(r"[\x00-\x08\x0a-\x1f]+", "", raw)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
