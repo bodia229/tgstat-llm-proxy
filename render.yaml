@@ -1,0 +1,32 @@
+# Render Blueprint для TGStat LLM Proxy.
+# https://render.com/docs/blueprint-spec
+#
+# Как деплоить:
+#   1. Форкни репу с этим файлом на свой GitHub
+#   2. В Render → New → Blueprint → указать репо
+#   3. Render создаст сервис из этого файла
+#   4. В Environment вставить LLM_PROVIDERS (JSON) и ACCESS_TOKENS (csv)
+#   5. Через 3-5 мин будет URL вида https://tgstat-proxy.onrender.com
+#
+# Плюс/минусы Free плана:
+#   + бесплатно, HTTPS автоматом
+#   - сервис засыпает через 15 мин без запросов → первый запрос 30-60с
+#   - 512 МБ RAM, 0.1 CPU (для прокси хватает)
+#
+services:
+  - type: web
+    name: tgstat-llm-proxy
+    runtime: python
+    plan: free
+    region: frankfurt        # выбери ближайший к TGStat/пользователям
+    rootDir: server          # если положишь сервер в подпапку репозитория
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT
+    healthCheckPath: /health
+    envVars:
+      - key: LLM_PROVIDERS
+        sync: false           # не хранить в blueprint, задавать вручную в UI
+      - key: ACCESS_TOKENS
+        sync: false           # секрет — тоже вручную
+      - key: PYTHON_VERSION
+        value: "3.11"
