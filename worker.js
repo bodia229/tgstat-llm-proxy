@@ -251,20 +251,30 @@ function classifyChat(result) {
   return { bucket: "KEEP", reason: "type=" + t + " slow=" + slow };
 }
 
-async function getChatOne(username, tok) {
-  let r;
-  try {
-    r = await fetch("https://api.telegram.org/bot" + tok +
-      "/getChat?chat_id=@" + encodeURIComponent(username));
-  } catch (e) { return { bucket: "GREY", reason: "net" }; }
-  let d;
-  try { d = await r.json(); } catch (e) { return { bucket: "GREY", reason: "parse" }; }
-  if (!d.ok) {
-    const err = (d.description || "").toLowerCase();
-    if (err.includes("chat not found")) return { bucket: "REJECT", reason: "not_found" };
-    if (r.status === 429 || err.includes("too many")) return { bucket: "GREY", reason: "ratelimit" };
-    return { bucket: "GREY", reason: "err" };
+async function getChatOne(username, pool, idx) {
+  // до 2 попыток разными токенами: при 429 не бросаем чат, а пробуем другой бот
+  for (let att = 0; att < 2; att++) {
+    const tok = pool[(idx + att) % pool.length];
+    let r;
+    try {
+      r = await fetch("https://api.telegram.org/bot" + tok +
+        "/getChat?chat_id=@" + encodeURIComponent(username));
+    } catch (e) { if (att) return { bucket: "GREY", reason: "net" }; continue; }
+    let d;
+    try { d = await r.json(); } catch (e) { if (att) return { bucket: "GREY", reason: "parse" }; continue; }
+    if (!d.ok) {
+      const err = (d.description || "").toLowerCase();
+      if (err.includes("chat not found")) return { bucket: "REJECT", reason: "not_found" };
+      if (r.status === 429 || err.includes("too many")) continue; // retry другим токеном
+      return { bucket: "GREY", reason: "err" };
+    }
+    return finishGetChat(d.result);
   }
+  return { bucket: "GREY", reason: "ratelimit" };
+}
+
+function finishGetChat(result) {
+  const d = { result };
   const cls = classifyChat(d.result);
   // Для НЕ-отсеянных отдаём авторитетные поля, которые LLM из сэмплов не узнает.
   if (cls.bucket !== "REJECT") {
@@ -323,19 +333,28 @@ async function handleContribute(request, env) {
 }
 
 async function handleGetChat(request, env) {
-  const botTokens = await loadPool(env);
-  if (!botTokens.length) return json(503, { error: { message: "no bot tokens" } });
+  const all = await loadPool(env);
+  if (!all.length) return json(503, { error: { message: "no bot tokens" } });
   let body;
   try { body = await request.json(); } catch (e) { return json(400, { error: { message: "bad json" } }); }
   let usernames = Array.isArray(body.usernames) ? body.usernames : [];
-  // лимит субзапросов воркера (free ~50): не больше 40 юзернеймов за запрос
-  usernames = usernames.slice(0, 40).map(u => String(u).replace(/^@/, "").toLowerCase());
-  const start = pickStartIdx(botTokens.length);
+  // до 25 юзернеймов × 2 попытки = ≤50 субзапросов (лимит free-воркера)
+  usernames = usernames.slice(0, 25).map(u => String(u).replace(/^@/, "").toLowerCase());
+  // rest/work ротация: активна ~40% пула, окно сдвигается каждые 3 минуты —
+  // отработавшие токены отдыхают, остальные работают → флуд-вейт реже.
+  let pool = all;
+  if (all.length > 50) {
+    const WORK = Math.max(30, Math.ceil(all.length * 0.4));
+    const shift = Math.floor(Date.now() / (3 * 60 * 1000)) % all.length;
+    pool = [];
+    for (let i = 0; i < WORK; i++) pool.push(all[(shift + i) % all.length]);
+  }
+  const start = pickStartIdx(pool.length);
   const results = {};
   await Promise.all(usernames.map((u, k) =>
-    getChatOne(u, botTokens[(start + k) % botTokens.length]).then(v => { results[u] = v; })
+    getChatOne(u, pool, (start + k * 2) % pool.length).then(v => { results[u] = v; })
   ));
-  return json(200, { results, pool: botTokens.length });
+  return json(200, { results, pool: all.length, active: pool.length });
 }
 
 export default {
