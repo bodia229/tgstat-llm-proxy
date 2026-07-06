@@ -273,7 +273,8 @@ function secretsPool(env) {
 }
 async function loadPool(env) {
   let kv = "";
-  if (env.STATS) { try { kv = (await env.STATS.get("bot_tokens")) || ""; } catch (e) {} }
+  const store = env.POOL || env.STATS;
+  if (store) { try { kv = (await store.get("bot_tokens")) || ""; } catch (e) {} }
   const set = new Set();
   for (const t of (kv + "," + secretsPool(env)).split(/[,\s]+/)) {
     const x = t.trim();
@@ -286,19 +287,20 @@ const TOK_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,50}$/;
 
 // Друзья шлют СВОИ созданные bot-токены в общий пул (пополнение в KV).
 async function handleContribute(request, env) {
-  if (!env.STATS) return json(503, { error: { message: "no store" } });
+  const store = env.POOL || env.STATS;
+  if (!store) return json(503, { error: { message: "no store" } });
   let body;
   try { body = await request.json(); } catch (e) { return json(400, { error: { message: "bad json" } }); }
   let toks = Array.isArray(body.tokens) ? body.tokens : [];
   toks = toks.map(t => String(t).trim()).filter(t => TOK_RE.test(t)).slice(0, 500);
   if (!toks.length) return json(200, { added: 0, pool: 0 });
   let cur = "";
-  try { cur = (await env.STATS.get("bot_tokens")) || ""; } catch (e) {}
+  try { cur = (await store.get("bot_tokens")) || ""; } catch (e) {}
   const set = new Set(cur.split(/[,\s]+/).map(t => t.trim()).filter(Boolean));
   let added = 0;
   for (const t of toks) if (!set.has(t)) { set.add(t); added++; }
   if (added) {
-    try { await env.STATS.put("bot_tokens", [...set].join(",")); }
+    try { await store.put("bot_tokens", [...set].join(",")); }
     catch (e) { return json(503, { error: { message: "kv write: " + (e.message || e) } }); }
   }
   return json(200, { added, pool: set.size });

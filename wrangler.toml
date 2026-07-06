@@ -6,6 +6,12 @@ compatibility_date = "2024-11-01"
 binding = "STATS"
 id = "5feb97af38624235b3c7f7092924c06f"
 
+# Отдельный namespace под растущий пул bot-токенов (свой лимит записей,
+# не конкурирует со счётчиками STATS). Пополняется через /contribute.
+[[kv_namespaces]]
+binding = "POOL"
+id = "bb12e58273174bae92934b4c81ca9bc3"
+
 # Cloudflare Workers AI — привязывает env.AI, бесплатно 10K Neurons/день.
 # Используется как встроенный upstream для провайдера с name="cloudflare-ai".
 [ai]
