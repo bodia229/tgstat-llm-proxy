@@ -265,7 +265,20 @@ async function getChatOne(username, tok) {
     if (r.status === 429 || err.includes("too many")) return { bucket: "GREY", reason: "ratelimit" };
     return { bucket: "GREY", reason: "err" };
   }
-  return classifyChat(d.result);
+  const cls = classifyChat(d.result);
+  // Для НЕ-отсеянных отдаём авторитетные поля, которые LLM из сэмплов не узнает.
+  if (cls.bucket !== "REJECT") {
+    const R = d.result, p = R.permissions || {};
+    cls.info = {
+      slow: R.slow_mode_delay || 0,
+      media: p.can_send_media_messages !== false,
+      history: R.has_visible_history !== false,
+      join_to_send: !!R.join_to_send_messages,
+      desc: (R.description || "").slice(0, 300),
+      title: R.title || "",
+    };
+  }
+  return cls;
 }
 
 // Пул bot-токенов = seed из split-секретов (BOT_TOKENS..12) + пополнения друзей в KV.
