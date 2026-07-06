@@ -238,8 +238,11 @@ function classifyChat(result) {
   const t = result.type;
   if (t === "channel") return { bucket: "REJECT", reason: "channel" };
   if (t === "bot" || t === "private") return { bucket: "REJECT", reason: "type=" + t };
+  // Форум-чат с топиками — нельзя писать в общий поток (только в топики) → режем
+  if (result.is_forum) return { bucket: "REJECT", reason: "forum" };
   const perms = result.permissions || {};
   if (perms.can_send_messages === false) return { bucket: "REJECT", reason: "no_send_perm" };
+  // Чат по заявке (нужно одобрение админа) → режем
   if (result.join_by_request) return { bucket: "REJECT", reason: "join_by_request" };
   const paid = result.paid_message_star_count || 0;
   if (paid >= 1) return { bucket: "REJECT", reason: "paid_stars=" + paid };
