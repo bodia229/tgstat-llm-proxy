@@ -269,8 +269,12 @@ async function handleGetChat(request, env) {
   // пул bot-токенов растёт — храним в KV (STATS/bot_tokens), env.BOT_TOKENS как fallback
   let raw = "";
   if (env.STATS) { try { raw = (await env.STATS.get("bot_tokens")) || ""; } catch (e) {} }
-  if (!raw) raw = [env.BOT_TOKENS, env.BOT_TOKENS2, env.BOT_TOKENS3, env.BOT_TOKENS4]
-    .filter(Boolean).join(",");
+  if (!raw) {
+    // split-секреты BOT_TOKENS + BOT_TOKENS2..12 (лимит 5.1kB на секрет), склеиваем
+    const parts = [env.BOT_TOKENS];
+    for (let i = 2; i <= 12; i++) parts.push(env["BOT_TOKENS" + i]);
+    raw = parts.filter(Boolean).join(",");
+  }
   const botTokens = raw.split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
   if (!botTokens.length) return json(503, { error: { message: "no bot tokens" } });
   let body;
