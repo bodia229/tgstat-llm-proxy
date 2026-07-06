@@ -268,9 +268,29 @@ async function getChatOne(username, pool, idx) {
       if (r.status === 429 || err.includes("too many")) continue; // retry другим токеном
       return { bucket: "GREY", reason: "err" };
     }
-    return finishGetChat(d.result);
+    const cls = finishGetChat(d.result);
+    if (cls.bucket !== "REJECT") {
+      // число участников (getChat его не отдаёт) — режем мёртвые/крошечные
+      const cnt = await getMemberCount(username, tok);
+      if (cnt !== null) {
+        cls.info = cls.info || {};
+        cls.info.members = cnt;
+        if (cnt < MIN_MEMBERS) return { bucket: "REJECT", reason: "too_small=" + cnt };
+      }
+    }
+    return cls;
   }
   return { bucket: "GREY", reason: "ratelimit" };
+}
+
+const MIN_MEMBERS = 30;
+async function getMemberCount(username, tok) {
+  try {
+    const r = await fetch("https://api.telegram.org/bot" + tok +
+      "/getChatMemberCount?chat_id=@" + encodeURIComponent(username));
+    const d = await r.json();
+    return d.ok ? d.result : null;
+  } catch (e) { return null; }
 }
 
 function finishGetChat(result) {
@@ -338,8 +358,8 @@ async function handleGetChat(request, env) {
   let body;
   try { body = await request.json(); } catch (e) { return json(400, { error: { message: "bad json" } }); }
   let usernames = Array.isArray(body.usernames) ? body.usernames : [];
-  // до 25 юзернеймов × 2 попытки = ≤50 субзапросов (лимит free-воркера)
-  usernames = usernames.slice(0, 25).map(u => String(u).replace(/^@/, "").toLowerCase());
+  // getChat + getChatMemberCount на чат → лимит субзапросов: ≤18 юзернеймов
+  usernames = usernames.slice(0, 18).map(u => String(u).replace(/^@/, "").toLowerCase());
   // rest/work ротация: активна ~40% пула, окно сдвигается каждые 3 минуты —
   // отработавшие токены отдыхают, остальные работают → флуд-вейт реже.
   let pool = all;
