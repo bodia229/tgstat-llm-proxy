@@ -265,17 +265,47 @@ async function getChatOne(username, tok) {
   return classifyChat(d.result);
 }
 
-async function handleGetChat(request, env) {
-  // пул bot-токенов растёт — храним в KV (STATS/bot_tokens), env.BOT_TOKENS как fallback
-  let raw = "";
-  if (env.STATS) { try { raw = (await env.STATS.get("bot_tokens")) || ""; } catch (e) {} }
-  if (!raw) {
-    // split-секреты BOT_TOKENS + BOT_TOKENS2..12 (лимит 5.1kB на секрет), склеиваем
-    const parts = [env.BOT_TOKENS];
-    for (let i = 2; i <= 12; i++) parts.push(env["BOT_TOKENS" + i]);
-    raw = parts.filter(Boolean).join(",");
+// Пул bot-токенов = seed из split-секретов (BOT_TOKENS..12) + пополнения друзей в KV.
+function secretsPool(env) {
+  const parts = [env.BOT_TOKENS];
+  for (let i = 2; i <= 12; i++) parts.push(env["BOT_TOKENS" + i]);
+  return parts.filter(Boolean).join(",");
+}
+async function loadPool(env) {
+  let kv = "";
+  if (env.STATS) { try { kv = (await env.STATS.get("bot_tokens")) || ""; } catch (e) {} }
+  const set = new Set();
+  for (const t of (kv + "," + secretsPool(env)).split(/[,\s]+/)) {
+    const x = t.trim();
+    if (x) set.add(x);
   }
-  const botTokens = raw.split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
+  return [...set];
+}
+
+const TOK_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,50}$/;
+
+// Друзья шлют СВОИ созданные bot-токены в общий пул (пополнение в KV).
+async function handleContribute(request, env) {
+  if (!env.STATS) return json(503, { error: { message: "no store" } });
+  let body;
+  try { body = await request.json(); } catch (e) { return json(400, { error: { message: "bad json" } }); }
+  let toks = Array.isArray(body.tokens) ? body.tokens : [];
+  toks = toks.map(t => String(t).trim()).filter(t => TOK_RE.test(t)).slice(0, 500);
+  if (!toks.length) return json(200, { added: 0, pool: 0 });
+  let cur = "";
+  try { cur = (await env.STATS.get("bot_tokens")) || ""; } catch (e) {}
+  const set = new Set(cur.split(/[,\s]+/).map(t => t.trim()).filter(Boolean));
+  let added = 0;
+  for (const t of toks) if (!set.has(t)) { set.add(t); added++; }
+  if (added) {
+    try { await env.STATS.put("bot_tokens", [...set].join(",")); }
+    catch (e) { return json(503, { error: { message: "kv write: " + (e.message || e) } }); }
+  }
+  return json(200, { added, pool: set.size });
+}
+
+async function handleGetChat(request, env) {
+  const botTokens = await loadPool(env);
   if (!botTokens.length) return json(503, { error: { message: "no bot tokens" } });
   let body;
   try { body = await request.json(); } catch (e) { return json(400, { error: { message: "bad json" } }); }
@@ -327,6 +357,12 @@ export default {
         return json(401, { error: { message: "unauthorized" } });
       }
       return handleGetChat(request, env);
+    }
+    if (request.method === "POST" && path === "/contribute") {
+      if (!isAuthOK(bearer, tokens)) {
+        return json(401, { error: { message: "unauthorized" } });
+      }
+      return handleContribute(request, env);
     }
     return json(404, { error: { message: "not found" } });
   },
