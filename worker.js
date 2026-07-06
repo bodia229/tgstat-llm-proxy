@@ -233,6 +233,59 @@ async function handleChat(request, env, ctx, slots, token) {
   return json(lastStatus, { error: { message: lastErr, type: "exhausted" } });
 }
 
+// ---- getChat: авторитетная проверка чата пулом bot-токенов (env.BOT_TOKENS) ----
+function classifyChat(result) {
+  const t = result.type;
+  if (t === "channel") return { bucket: "REJECT", reason: "channel" };
+  if (t === "bot" || t === "private") return { bucket: "REJECT", reason: "type=" + t };
+  const perms = result.permissions || {};
+  if (perms.can_send_messages === false) return { bucket: "REJECT", reason: "no_send_perm" };
+  if (result.join_by_request) return { bucket: "REJECT", reason: "join_by_request" };
+  const paid = result.paid_message_star_count || 0;
+  if (paid >= 1) return { bucket: "REJECT", reason: "paid_stars=" + paid };
+  const slow = result.slow_mode_delay || 0;
+  if (slow >= 3600) return { bucket: "REJECT", reason: "slow_mode=" + slow };
+  return { bucket: "KEEP", reason: "type=" + t + " slow=" + slow };
+}
+
+async function getChatOne(username, tok) {
+  let r;
+  try {
+    r = await fetch("https://api.telegram.org/bot" + tok +
+      "/getChat?chat_id=@" + encodeURIComponent(username));
+  } catch (e) { return { bucket: "GREY", reason: "net" }; }
+  let d;
+  try { d = await r.json(); } catch (e) { return { bucket: "GREY", reason: "parse" }; }
+  if (!d.ok) {
+    const err = (d.description || "").toLowerCase();
+    if (err.includes("chat not found")) return { bucket: "REJECT", reason: "not_found" };
+    if (r.status === 429 || err.includes("too many")) return { bucket: "GREY", reason: "ratelimit" };
+    return { bucket: "GREY", reason: "err" };
+  }
+  return classifyChat(d.result);
+}
+
+async function handleGetChat(request, env) {
+  // пул bot-токенов растёт — храним в KV (STATS/bot_tokens), env.BOT_TOKENS как fallback
+  let raw = "";
+  if (env.STATS) { try { raw = (await env.STATS.get("bot_tokens")) || ""; } catch (e) {} }
+  if (!raw) raw = [env.BOT_TOKENS, env.BOT_TOKENS2, env.BOT_TOKENS3, env.BOT_TOKENS4]
+    .filter(Boolean).join(",");
+  const botTokens = raw.split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
+  if (!botTokens.length) return json(503, { error: { message: "no bot tokens" } });
+  let body;
+  try { body = await request.json(); } catch (e) { return json(400, { error: { message: "bad json" } }); }
+  let usernames = Array.isArray(body.usernames) ? body.usernames : [];
+  // лимит субзапросов воркера (free ~50): не больше 40 юзернеймов за запрос
+  usernames = usernames.slice(0, 40).map(u => String(u).replace(/^@/, "").toLowerCase());
+  const start = pickStartIdx(botTokens.length);
+  const results = {};
+  await Promise.all(usernames.map((u, k) =>
+    getChatOne(u, botTokens[(start + k) % botTokens.length]).then(v => { results[u] = v; })
+  ));
+  return json(200, { results, pool: botTokens.length });
+}
+
 export default {
   async fetch(request, env, ctx) {
     let providers, slots, tokens;
@@ -264,6 +317,12 @@ export default {
         return json(401, { error: { message: "unauthorized" } });
       }
       return handleChat(request, env, ctx, slots, bearer);
+    }
+    if (request.method === "POST" && path === "/getchat") {
+      if (!isAuthOK(bearer, tokens)) {
+        return json(401, { error: { message: "unauthorized" } });
+      }
+      return handleGetChat(request, env);
     }
     return json(404, { error: { message: "not found" } });
   },
